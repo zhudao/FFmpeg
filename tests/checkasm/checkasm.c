@@ -253,6 +253,9 @@ static const struct {
     #if CONFIG_SBC_ENCODER
         { "sbcdsp", checkasm_check_sbcdsp },
     #endif
+    #if CONFIG_SNOW_DECODER
+        { "snowdsp", checkasm_check_snowdsp },
+    #endif
     #if CONFIG_SVQ1_ENCODER
         { "svq1enc", checkasm_check_svq1enc },
     #endif
@@ -338,6 +341,9 @@ static const struct {
     #endif
     #if CONFIG_NLMEANS_FILTER
         { "vf_nlmeans", checkasm_check_nlmeans },
+    #endif
+    #if CONFIG_PP7_FILTER
+        { "vf_pp7", checkasm_check_vf_pp7 },
     #endif
     #if CONFIG_THRESHOLD_FILTER
         { "vf_threshold", checkasm_check_vf_threshold },

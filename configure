@@ -222,7 +222,6 @@ External library support:
   --enable-libbluray       enable BluRay reading using libbluray [no]
   --enable-libbs2b         enable bs2b DSP library [no]
   --enable-libcaca         enable textual display using libcaca [no]
-  --enable-libcelt         enable CELT decoding via libcelt [no]
   --enable-libcdio         enable audio CD grabbing with libcdio [no]
   --enable-libcodec2       enable codec2 en/decoding using libcodec2 [no]
   --enable-libdav1d        enable AV1 decoding via libdav1d [no]
@@ -390,7 +389,7 @@ Toolchain options:
   --tempprefix=PATH        force fixed dir/prefix instead of mktemp for checks
   --toolchain=NAME         set tool defaults according to NAME
                            (<tool>[-sanitizer[-...]], e.g. clang-asan-ubsan
-                           tools: gcc, clang, msvc, icl, gcov, llvm-cov,
+                           tools: gcc, clang, llvm, msvc, icl, gcov, llvm-cov,
                                   valgrind-memcheck, valgrind-massif, hardened
                            sanitizers: asan, fuzz, lsan, msan, tsan, ubsan)
   --nm=NM                  use nm tool NM [$nm_default]
@@ -415,6 +414,7 @@ Toolchain options:
   --pkg-config-flags=FLAGS pass additional flags to pkgconf []
   --ranlib=RANLIB          use ranlib RANLIB [$ranlib_default]
   --doxygen=DOXYGEN        use DOXYGEN to generate API doc [$doxygen_default]
+  --makeinfo=MAKEINFO      use MAKEINFO to generate documentation [$makeinfo_default]
   --host-cc=HOSTCC         use host C compiler HOSTCC
   --host-cflags=HCFLAGS    use HCFLAGS when compiling for host
   --host-cppflags=HCPPFLAGS use HCPPFLAGS when compiling for host
@@ -1081,6 +1081,10 @@ hostcc_o(){
     eval printf '%s\\n' $HOSTCC_O
 }
 
+hostld_o(){
+    eval printf '%s\\n' $HOSTLD_O
+}
+
 glslc_o(){
     eval printf '%s\\n' $GLSLC_O
 }
@@ -1296,7 +1300,14 @@ test_ld(){
     test_$type $($cflags_filter $flags) || return
     flags=$($ldflags_filter $flags)
     libs=$($ldflags_filter $libs)
-    test_cmd $ld $LDFLAGS $LDEXEFLAGS $flags $(ld_o $TMPE) $TMPO $libs $extralibs
+    log $ld $LDFLAGS $LDEXEFLAGS $flags $(ld_o $TMPE) $TMPO $libs $extralibs
+    output=$($ld $LDFLAGS $LDEXEFLAGS $flags $(ld_o $TMPE) $TMPO $libs $extralibs 2>&1)
+    ret=$?
+    echo "$output" >> $logfile
+    # link.exe and lld-link exit 0 even for unrecognized options, emitting
+    # only a warning (LNK4044 / "ignoring unknown argument").  Treat such
+    # output as failure so check_ldflags rejects those flags correctly.
+    test $ret -eq 0 && ! echo "$output" | grep -qE 'LNK4044|lld-link: warning: ignoring unknown argument'
 }
 
 check_ld(){
@@ -1835,6 +1846,16 @@ test_host_cc(){
     test_cmd $host_cc $host_cflags "$@" $HOSTCC_C $(hostcc_o $TMPO) $TMPC
 }
 
+test_host_ld(){
+    log test_host_ld "$@"
+    flags=$(filter_out '-l*|*.so' $@)
+    libs=$(filter '-l*|*.so' $@)
+    test_host_cc $($host_cflags_filter $flags) || return
+    flags=$($host_ldflags_filter $flags)
+    libs=$($host_ldflags_filter $libs)
+    test_cmd $host_ld $host_ldflags $flags $(hostld_o $TMPE) $TMPO $libs $host_extralibs
+}
+
 test_host_cpp(){
     log test_host_cpp "$@"
     cat > $TMPC
@@ -1897,6 +1918,27 @@ check_host_cpp_condition(){
     shift 1
     disable $name
     test_host_cpp_condition "$@" && enable $name
+}
+
+check_host_lib(){
+    log check_host_lib "$@"
+    headers="$1"
+    funcs="$2"
+    shift 2
+    {
+        for hdr in $headers; do
+            print_include $hdr
+        done
+        echo "#include <stdint.h>"
+        for func in $funcs; do
+            echo "long check_$func(void) { return (long) $func; }"
+        done
+        echo "int main(void) { int ret = 0;"
+        for func in $funcs; do
+            echo " ret |= ((intptr_t)check_$func) & 0xFFFF;"
+        done
+        echo "return ret; }"
+    } | test_host_ld "$@" && append host_extralibs "$@"
 }
 
 cp_if_changed(){
@@ -2042,7 +2084,6 @@ EXTERNAL_LIBRARY_LIST="
     libbluray
     libbs2b
     libcaca
-    libcelt
     libcodec2
     libdav1d
     libdc1394
@@ -2454,6 +2495,8 @@ HEADERS_LIST="
     valgrind_valgrind_h
     windows_h
     winsock2_h
+    spirv_headers_spirv_h
+    spirv_unified1_spirv_h
 "
 
 INTRINSICS_LIST="
@@ -2672,7 +2715,6 @@ HAVE_LIST="
     gzip
     ioctl_posix
     libdrm_getfb2
-    makeinfo
     makeinfo_html
     opencl_d3d11
     opencl_drm_arm
@@ -2702,7 +2744,9 @@ CONFIG_EXTRA="
     cabac
     cbs
     cbs_apv
+    cbs_apv_lavf
     cbs_av1
+    cbs_av1_lavf
     cbs_h264
     cbs_h265
     cbs_h266
@@ -2854,6 +2898,7 @@ CMDLINE_SET="
     cxx
     dep_cc
     doxygen
+    makeinfo
     env
     extra_version
     gas
@@ -3241,6 +3286,7 @@ nuv_decoder_select="idctdsp"
 opus_decoder_deps="swresample"
 opus_encoder_select="audio_frame_queue"
 pdv_decoder_select="inflate_wrapper"
+pdv_encoder_select="deflate_wrapper"
 png_decoder_select="inflate_wrapper"
 png_encoder_select="deflate_wrapper llvidencdsp"
 prores_decoder_select="blockdsp idctdsp"
@@ -3318,6 +3364,7 @@ vp9_decoder_select="videodsp vp9_parser cbs_vp9 vp9_superframe_split_bsf"
 vvc_decoder_select="cabac cbs_h266 golomb videodsp vvc_sei"
 wcmv_decoder_select="inflate_wrapper"
 webp_decoder_select="vp8_decoder"
+webp_anim_decoder_select="vp8_decoder"
 wmalossless_decoder_select="llauddsp"
 wmapro_decoder_select="sinewin wma_freqs"
 wmav1_decoder_select="sinewin wma_freqs"
@@ -3355,6 +3402,8 @@ videotoolbox_hwaccel_extralibs="-framework QuartzCore"
 vulkan_deps="threads"
 vulkan_deps_any="libdl LoadLibrary"
 
+apv_vulkan_hwaccel_deps="vulkan spirv_compiler"
+apv_vulkan_hwaccel_select="apv_decoder"
 av1_d3d11va_hwaccel_deps="d3d11va DXVA_PicParams_AV1"
 av1_d3d11va_hwaccel_select="av1_decoder"
 av1_d3d11va2_hwaccel_deps="d3d11va DXVA_PicParams_AV1"
@@ -3453,6 +3502,8 @@ mpeg4_videotoolbox_hwaccel_deps="videotoolbox"
 mpeg4_videotoolbox_hwaccel_select="mpeg4_decoder"
 prores_videotoolbox_hwaccel_deps="videotoolbox"
 prores_videotoolbox_hwaccel_select="prores_decoder"
+prores_raw_videotoolbox_hwaccel_deps="videotoolbox"
+prores_raw_videotoolbox_hwaccel_select="prores_raw_decoder"
 prores_raw_vulkan_hwaccel_deps="vulkan spirv_compiler"
 prores_raw_vulkan_hwaccel_select="prores_raw_decoder"
 prores_vulkan_hwaccel_deps="vulkan spirv_compiler"
@@ -3530,6 +3581,8 @@ scale_cuda_filter_deps="ffnvcodec"
 scale_cuda_filter_deps_any="cuda_nvcc cuda_llvm"
 thumbnail_cuda_filter_deps="ffnvcodec"
 thumbnail_cuda_filter_deps_any="cuda_nvcc cuda_llvm"
+transpose_cuda_filter_deps="ffnvcodec"
+transpose_cuda_filter_deps_any="cuda_nvcc cuda_llvm"
 transpose_npp_filter_deps="ffnvcodec libnpp"
 overlay_cuda_filter_deps="ffnvcodec"
 overlay_cuda_filter_deps_any="cuda_nvcc cuda_llvm"
@@ -3701,6 +3754,7 @@ vvc_parser_select="cbs_h266"
 # bitstream_filters
 aac_adtstoasc_bsf_select="adts_header mpeg4audio"
 ahx_to_mp2_bsf_deps="lgpl_gpl"
+apv_metadata_bsf_select="cbs_apv"
 av1_frame_merge_bsf_select="cbs_av1"
 av1_frame_split_bsf_select="cbs_av1"
 av1_metadata_bsf_select="cbs_av1"
@@ -3769,7 +3823,6 @@ libaom_av1_encoder_deps="libaom"
 libaom_av1_encoder_select="extract_extradata_bsf dovi_rpuenc"
 libaribb24_decoder_deps="libaribb24"
 libaribcaption_decoder_deps="libaribcaption"
-libcelt_decoder_deps="libcelt"
 libcodec2_decoder_deps="libcodec2"
 libcodec2_encoder_deps="libcodec2"
 libdav1d_decoder_deps="libdav1d"
@@ -3915,7 +3968,7 @@ mlp_demuxer_select="mlp_parser"
 mmf_muxer_select="riffenc"
 mov_demuxer_select="iso_media riffdec"
 mov_demuxer_suggest="iamfdec zlib"
-mov_muxer_select="iso_media iso_writer riffenc rtpenc_chain vp9_superframe_bsf aac_adtstoasc_bsf ac3_parser"
+mov_muxer_select="cbs_apv_lavf cbs_av1_lavf iso_media iso_writer riffenc rtpenc_chain vp9_superframe_bsf aac_adtstoasc_bsf ac3_parser"
 mov_muxer_suggest="iamfenc"
 mp3_demuxer_select="mpegaudio_parser"
 mp3_muxer_select="mpegaudioheader"
@@ -4098,17 +4151,17 @@ ass_filter_deps="libass"
 avgblur_opencl_filter_deps="opencl"
 avgblur_vulkan_filter_deps="vulkan spirv_compiler"
 azmq_filter_deps="libzmq"
-blackdetect_vulkan_filter_deps="vulkan spirv_library"
+blackdetect_vulkan_filter_deps="vulkan spirv_compiler"
 blackframe_filter_deps="gpl"
-blend_vulkan_filter_deps="vulkan spirv_library"
+blend_vulkan_filter_deps="vulkan spirv_compiler"
 boxblur_filter_deps="gpl"
 boxblur_opencl_filter_deps="opencl gpl"
 bs2b_filter_deps="libbs2b"
 bwdif_cuda_filter_deps="ffnvcodec"
 bwdif_cuda_filter_deps_any="cuda_nvcc cuda_llvm"
 bwdif_vulkan_filter_deps="vulkan spirv_compiler"
-chromaber_vulkan_filter_deps="vulkan spirv_library"
-color_vulkan_filter_deps="vulkan spirv_library"
+chromaber_vulkan_filter_deps="vulkan spirv_compiler"
+color_vulkan_filter_deps="vulkan spirv_compiler"
 colorkey_opencl_filter_deps="opencl"
 colormatrix_filter_deps="gpl"
 convolution_opencl_filter_deps="opencl"
@@ -4137,7 +4190,7 @@ elbg_filter_deps="avcodec"
 eq_filter_deps="gpl"
 erosion_opencl_filter_deps="opencl"
 find_rect_filter_deps="avcodec avformat gpl"
-flip_vulkan_filter_deps="vulkan spirv_library"
+flip_vulkan_filter_deps="vulkan spirv_compiler"
 flite_filter_deps="libflite threads"
 framerate_filter_select="scene_sad"
 freezedetect_filter_select="scene_sad"
@@ -4146,15 +4199,15 @@ frei0r_filter_deps="frei0r"
 frei0r_src_filter_deps="frei0r"
 fspp_filter_deps="gpl"
 fsync_filter_deps="avformat"
-gblur_vulkan_filter_deps="vulkan spirv_library"
-hflip_vulkan_filter_deps="vulkan spirv_library"
+gblur_vulkan_filter_deps="vulkan spirv_compiler"
+hflip_vulkan_filter_deps="vulkan spirv_compiler"
 histeq_filter_deps="gpl"
 hqdn3d_filter_deps="gpl"
 iccdetect_filter_deps="lcms2"
 iccgen_filter_deps="lcms2"
 identity_filter_select="scene_sad"
 interlace_filter_deps="gpl"
-interlace_vulkan_filter_deps="vulkan spirv_library"
+interlace_vulkan_filter_deps="vulkan spirv_compiler"
 kerndeint_filter_deps="gpl"
 ladspa_filter_deps="ladspa libdl"
 lcevc_filter_deps="liblcevc_dec"
@@ -4171,7 +4224,7 @@ mptestsrc_filter_deps="gpl"
 msad_filter_select="scene_sad"
 negate_filter_deps="lut_filter"
 nlmeans_opencl_filter_deps="opencl"
-nlmeans_vulkan_filter_deps="vulkan spirv_library"
+nlmeans_vulkan_filter_deps="vulkan spirv_compiler"
 nnedi_filter_deps="gpl"
 ocr_filter_deps="libtesseract"
 ocv_filter_deps="libopencv"
@@ -4185,7 +4238,7 @@ overlay_opencl_filter_deps="opencl"
 overlay_qsv_filter_deps="libmfx"
 overlay_qsv_filter_select="qsvvpp"
 overlay_vaapi_filter_deps="vaapi VAProcPipelineCaps_blend_flags"
-overlay_vulkan_filter_deps="vulkan spirv_library"
+overlay_vulkan_filter_deps="vulkan spirv_compiler"
 owdenoise_filter_deps="gpl"
 pad_opencl_filter_deps="opencl"
 pan_filter_deps="swresample"
@@ -4206,10 +4259,11 @@ scale2ref_filter_deps="swscale"
 scale_filter_deps="swscale"
 sr_amf_filter_deps="amf"
 vpp_amf_filter_deps="amf"
+frc_amf_filter_deps="amf windows_h"
 scale_qsv_filter_deps="libmfx"
 scale_qsv_filter_select="qsvvpp"
 scdet_filter_select="scene_sad"
-scdet_vulkan_filter_deps="vulkan spirv_library"
+scdet_vulkan_filter_deps="vulkan spirv_compiler"
 select_filter_select="scene_sad"
 sharpness_vaapi_filter_deps="vaapi"
 showcqt_filter_deps="avformat swscale"
@@ -4235,11 +4289,12 @@ tonemap_opencl_filter_deps="opencl const_nan"
 transpose_opencl_filter_deps="opencl"
 transpose_vaapi_filter_deps="vaapi VAProcPipelineCaps_rotation_flags"
 transpose_vt_filter_deps="videotoolbox VTPixelRotationSessionCreate"
-transpose_vulkan_filter_deps="vulkan spirv_library"
+transpose_vulkan_filter_deps="vulkan spirv_compiler"
 unsharp_opencl_filter_deps="opencl"
 uspp_filter_deps="gpl avcodec"
+v360_vulkan_filter_deps="vulkan spirv_compiler"
 vaguedenoiser_filter_deps="gpl"
-vflip_vulkan_filter_deps="vulkan spirv_library"
+vflip_vulkan_filter_deps="vulkan spirv_compiler"
 vidstabdetect_filter_deps="libvidstab"
 vidstabtransform_filter_deps="libvidstab"
 libvmaf_filter_deps="libvmaf"
@@ -4253,7 +4308,7 @@ scale_vulkan_filter_deps="vulkan spirv_compiler spirv_library"
 vpp_qsv_filter_deps="libmfx"
 vpp_qsv_filter_select="qsvvpp"
 xfade_opencl_filter_deps="opencl"
-xfade_vulkan_filter_deps="vulkan spirv_library"
+xfade_vulkan_filter_deps="vulkan spirv_compiler"
 yadif_cuda_filter_deps="ffnvcodec"
 yadif_cuda_filter_deps_any="cuda_nvcc cuda_llvm"
 yadif_videotoolbox_filter_deps="metal corevideo videotoolbox"
@@ -4337,7 +4392,7 @@ podpages_deps="perl"
 manpages_deps="perl pod2man"
 htmlpages_deps="perl"
 htmlpages_deps_any="makeinfo_html texi2html"
-txtpages_deps="perl makeinfo"
+txtpages_deps="perl makeinfo_command"
 doc_deps_any="manpages htmlpages podpages txtpages"
 
 # default parameters
@@ -4361,6 +4416,7 @@ stdcxx_default="c++17"
 cxx_default="g++"
 host_cc_default="gcc"
 doxygen_default="doxygen"
+makeinfo_default="makeinfo"
 install="install"
 ln_s_default="ln -s -f"
 glslc_default="glslc"
@@ -4470,7 +4526,7 @@ GLSLC_O='-o $@'
 NVCC_C='-c'
 NVCC_O='-o $@'
 
-host_extralibs='-lm'
+host_extralibs=
 host_cflags_filter=echo
 host_ldflags_filter=echo
 
@@ -4487,7 +4543,7 @@ mkdir -p ffbuild
 if test -f configure; then
     source_path=.
 elif test -f src/configure; then
-    source_path=src
+    source_path=./src
 else
     source_path=$(cd $(dirname "$0"); pwd)
     case "$source_path" in
@@ -4875,6 +4931,16 @@ case "$toolchain" in
         cc_default="clang"
         cxx_default="clang++"
     ;;
+    llvm|llvm-*)
+        cc_default="clang"
+        cxx_default="clang++"
+        ar_default="llvm-ar"
+        nm_default="llvm-nm -g"
+        ranlib_default="llvm-ranlib"
+        strip_default="llvm-strip"
+        windres_default="llvm-windres"
+        test "$toolchain" != "llvm" && add_sanitizers "${toolchain#llvm-}"
+    ;;
     gcc-*)
         add_sanitizers "${toolchain#gcc-}"
         cc_default="gcc"
@@ -4999,7 +5065,7 @@ if enabled cuda_nvcc; then
 fi
 
 set_default arch cc cxx doxygen pkg_config ranlib strip sysinclude \
-    target_exec x86asmexe glslc metalcc metallib stdc stdcxx
+    target_exec x86asmexe glslc metalcc metallib stdc stdcxx makeinfo
 enabled cross_compile || host_cc_default=$cc
 set_default host_cc
 
@@ -5016,7 +5082,7 @@ elif is_in -static $cc $LDFLAGS && ! is_in --static $pkg_config $pkg_config_flag
 Note: When building a static binary, add --pkg-config-flags=\"--static\"."
 fi
 
-if test $doxygen != $doxygen_default && \
+if test "$doxygen" != "$doxygen_default" && \
   ! $doxygen --version >/dev/null 2>&1; then
     warn "Specified doxygen \"$doxygen\" not found, API documentation will fail to build."
 fi
@@ -5142,7 +5208,8 @@ msvc_common_flags(){
             -lstdc++)             ;;
             -l*)                  echo ${flag#-l}.lib ;;
             -LARGEADDRESSAWARE)   echo $flag ;;
-            -L*) [ "$_flags_type" = "link" ] && echo -libpath:${flag#-L} ;;
+            -L*) [ "$_flags_type" != "link" ] || echo -libpath:${flag#-L} ;;
+            -I*) [ "$_flags_type" = "link" ] || echo $flag ;;
             -Wl,*)                ;;
             *)                    echo $flag ;;
         esac
@@ -6316,7 +6383,7 @@ link_name=$(mktemp -u $TMPDIR/name_XXXXXXXX)
 mkdir "$link_dest"
 $ln_s "$link_dest" "$link_name"
 touch "$link_dest/test_file"
-if [ "$source_path" != "." ] && [ "$source_path" != "src" ] && ([ ! -d src ] || [ -L src ]) && [ -e "$link_name/test_file" ]; then
+if [ "$source_path" != "." ] && [ "$source_path" != "./src" ] && ([ ! -d src ] || [ -L src ]) && [ -e "$link_name/test_file" ]; then
     # create link to source path
     [ -e src ] && rm src
     $ln_s "$source_path" src
@@ -6722,7 +6789,7 @@ elif enabled ppc; then
     fi
 
     if enabled vsx; then
-        check_cflags -mvsx &&
+        check_cflags -mvsx
         check_cc vsx altivec.h "int v[4] = { 0 };
                                 vector signed int v1 = vec_vsx_ld(0, v);"
     fi
@@ -7213,6 +7280,7 @@ enabled zlib_gzip && enabled gzip || disable resource_compression
 check_lib libdl dlfcn.h "dlopen dlsym" || check_lib libdl dlfcn.h "dlopen dlsym" -ldl
 
 check_lib libm math.h sin -lm
+check_host_lib math.h sin -lm
 
 atan2f_args=2
 copysign_args=2
@@ -7251,9 +7319,6 @@ enabled libiec61883       && require libiec61883 libiec61883/iec61883.h iec61883
 enabled libass            && require_pkg_config libass "libass >= 0.11.0" ass/ass.h ass_library_init
 enabled libbluray         && require_pkg_config libbluray libbluray libbluray/bluray.h bd_open
 enabled libbs2b           && require_pkg_config libbs2b libbs2b bs2b.h bs2b_open
-enabled libcelt           && require libcelt celt/celt.h celt_decode -lcelt0 &&
-                             { check_lib libcelt celt/celt.h celt_decoder_create_custom -lcelt0 ||
-                               die "ERROR: libcelt must be installed and version must be >= 0.11.0."; }
 enabled libcaca           && require_pkg_config libcaca caca caca.h caca_create_canvas
 enabled libcodec2         && require libcodec2 codec2/codec2.h codec2_create -lcodec2
 enabled libdav1d          && require_pkg_config libdav1d "dav1d >= 1.0.0" "dav1d/dav1d.h" dav1d_version
@@ -7567,10 +7632,14 @@ enabled schannel &&
 
 enabled schannel && check_cc dtls_protocol "windows.h security.h schnlsp.h" "int i = SECPKG_ATTR_DTLS_MTU;" -DSECURITY_WIN32
 
-makeinfo --version > /dev/null 2>&1 && enable makeinfo  || disable makeinfo
-enabled makeinfo \
-    && [ 0$(makeinfo --version | grep "texinfo" | sed 's/.*texinfo[^0-9]*\([0-9]*\)\..*/\1/') -ge 5 ] \
+$makeinfo --version > /dev/null 2>&1 && enable makeinfo_command || disable makeinfo_command makeinfo_html
+if enabled makeinfo_command; then
+  [ 0$($makeinfo --version | grep "texinfo" | sed 's/.*texinfo[^0-9]*\([0-9]*\)\..*/\1/') -ge 5 ] \
     && enable makeinfo_html || disable makeinfo_html
+elif test "$makeinfo" != "$makeinfo_default" ; then
+  warn "Specified makeinfo \"$makeinfo\" not found."
+fi
+
 disabled makeinfo_html && texi2html --help 2> /dev/null | grep -q 'init-file' && enable texi2html || disable texi2html
 perl -v            > /dev/null 2>&1 && enable perl      || disable perl
 pod2man --help     > /dev/null 2>&1 && enable pod2man   || disable pod2man
@@ -7800,6 +7869,12 @@ else
     disable libglslang libshaderc spirv_library spirv_compiler
 fi
 
+if enabled vulkan; then
+    check_headers spirv-headers/spirv.h ||
+    check_headers spirv/unified1/spirv.h ||
+    { requested vulkan && warn "spirv-headers not found, swscale SPIR-V backend unavailable"; }
+fi
+
 if enabled x86; then
     case $target_os in
         freebsd|mingw32*|mingw64*|win32|win64|linux|cygwin*)
@@ -7889,6 +7964,15 @@ check_warning -Wempty-body
 # This roughly matches the default thread stack size on Musl, which is 128 KiB,
 # leaving some headroom for caller frames.
 check_warning -Wstack-usage=122880
+
+# GCC accepts warning option level 5 here to warn about all fallthroughs
+# that are not explicitly marked with the appropriate attribute
+if enabled gcc; then
+    check_warning -Wimplicit-fallthrough=5
+else
+    check_warning -Wimplicit-fallthrough
+fi
+
 check_c_warning -Wmissing-prototypes
 check_c_warning -Wstrict-prototypes
 check_c_warning -Wunterminated-string-initialization
@@ -8454,7 +8538,7 @@ echo "safe bitstream reader     ${safe_bitstream_reader-no}"
 echo "texi2html enabled         ${texi2html-no}"
 echo "perl enabled              ${perl-no}"
 echo "pod2man enabled           ${pod2man-no}"
-echo "makeinfo enabled          ${makeinfo-no}"
+echo "makeinfo enabled          ${makeinfo_command-no}"
 echo "makeinfo supports HTML    ${makeinfo_html-no}"
 echo "experimental features     ${unstable-no}"
 echo "xmllint enabled           ${xmllint-no}"
@@ -8603,6 +8687,7 @@ LD_PATH=$LD_PATH
 DLLTOOL=$dlltool
 WINDRES=$windres
 DOXYGEN=$doxygen
+MAKEINFO=$makeinfo
 LDFLAGS=$LDFLAGS
 LDEXEFLAGS=$LDEXEFLAGS
 LDSOFLAGS=$LDSOFLAGS

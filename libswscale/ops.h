@@ -55,15 +55,15 @@ typedef enum SwsOpType {
     /* Bit manipulation operations. Defined for integers only. */
     SWS_OP_UNPACK,          /* split tightly packed data into components */
     SWS_OP_PACK,            /* compress components into tightly packed data */
-    SWS_OP_LSHIFT,          /* logical left shift of raw pixel values by (u8) */
-    SWS_OP_RSHIFT,          /* right shift of raw pixel values by (u8) */
+    SWS_OP_LSHIFT,          /* logical left shift of raw pixel values */
+    SWS_OP_RSHIFT,          /* right shift of raw pixel values */
 
     /* Generic arithmetic. Defined and implemented for all types */
     SWS_OP_CLEAR,           /* clear pixel values */
     SWS_OP_CONVERT,         /* convert (cast) between formats */
-    SWS_OP_MIN,             /* numeric minimum (q4) */
-    SWS_OP_MAX,             /* numeric maximum (q4) */
-    SWS_OP_SCALE,           /* multiplication by scalar (q) */
+    SWS_OP_MIN,             /* numeric minimum */
+    SWS_OP_MAX,             /* numeric maximum */
+    SWS_OP_SCALE,           /* multiplication by scalar */
 
     /* Floating-point only arithmetic operations. */
     SWS_OP_LINEAR,          /* generalized linear affine transform */
@@ -78,6 +78,27 @@ typedef enum SwsOpType {
 
 const char *ff_sws_op_type_name(SwsOpType op);
 
+/**
+ * Bit-mask of components. Exact meaning depends on the usage context.
+ */
+typedef uint8_t SwsCompMask;
+enum {
+    SWS_COMP_NONE = 0,
+    SWS_COMP_ALL  = 0xF,
+#define SWS_COMP(X) (1 << (X))
+#define SWS_COMP_TEST(mask, X) (!!((mask) & SWS_COMP(X)))
+#define SWS_COMP_INV(mask) ((mask) ^ SWS_COMP_ALL)
+#define SWS_COMP_ELEMS(N) ((1 << (N)) - 1)
+#define SWS_COMP_MASK(X, Y, Z, W)   \
+    (((X) ? SWS_COMP(0) : 0) |      \
+     ((Y) ? SWS_COMP(1) : 0) |      \
+     ((Z) ? SWS_COMP(2) : 0) |      \
+     ((W) ? SWS_COMP(3) : 0))
+};
+
+/* Compute SwsCompMask from values with denominator != 0 */
+SwsCompMask ff_sws_comp_mask_q4(const AVRational q[4]);
+
 typedef enum SwsCompFlags {
     SWS_COMP_GARBAGE = 1 << 0, /* contents are undefined / garbage data */
     SWS_COMP_EXACT   = 1 << 1, /* value is an exact integer */
@@ -85,21 +106,8 @@ typedef enum SwsCompFlags {
     SWS_COMP_SWAPPED = 1 << 3, /* byte order is swapped */
 } SwsCompFlags;
 
-#define SWS_OP_NEEDED(op, idx) (!((op)->comps.flags[idx] & SWS_COMP_GARBAGE))
-
-typedef union SwsConst {
-    /* Generic constant value */
-    AVRational q4[4];
-    AVRational q;
-    unsigned u;
-} SwsConst;
-
-static_assert(sizeof(SwsConst) == sizeof(AVRational) * 4,
-              "First field of SwsConst should span the entire union");
-
 typedef struct SwsComps {
     SwsCompFlags flags[4]; /* knowledge about (output) component contents */
-    bool unused[4]; /* which input components are definitely unused */
 
     /* Keeps track of the known possible value range, or {0, 0} for undefined
      * or (unknown range) floating point inputs */
@@ -151,11 +159,29 @@ typedef struct SwsSwizzleOp {
 } SwsSwizzleOp;
 
 #define SWS_SWIZZLE(X,Y,Z,W) ((SwsSwizzleOp) { .in = {X, Y, Z, W} })
+SwsCompMask ff_sws_comp_mask_swizzle(SwsCompMask mask, SwsSwizzleOp swiz);
+
+typedef struct SwsShiftOp {
+    uint8_t amount; /* number of bits to shift */
+} SwsShiftOp;
+
+typedef struct SwsClearOp {
+    SwsCompMask mask;    /* mask of components to clear */
+    AVRational value[4]; /* value to set */
+} SwsClearOp;
 
 typedef struct SwsConvertOp {
     SwsPixelType to; /* type of pixel to convert to */
     bool expand; /* if true, integers are expanded to the full range */
 } SwsConvertOp;
+
+typedef struct SwsClampOp {
+    AVRational limit[4]; /* per-component min/max value */
+} SwsClampOp;
+
+typedef struct SwsScaleOp {
+    AVRational factor; /* scalar multiplication factor */
+} SwsScaleOp;
 
 typedef struct SwsDitherOp {
     AVRational *matrix; /* tightly packed dither matrix (refstruct) */
@@ -189,7 +215,7 @@ typedef struct SwsLinearOp {
 enum {
     SWS_MASK_ALL   = (1 << 20) - 1,
     SWS_MASK_LUMA  = SWS_MASK(0, 0) | SWS_MASK_OFF(0),
-    SWS_MASK_ALPHA = SWS_MASK(3, 3) | SWS_MASK_OFF(3),
+    SWS_MASK_ALPHA = SWS_MASK(3, 3),
 
     SWS_MASK_DIAG3 = SWS_MASK(0, 0)  | SWS_MASK(1, 1)  | SWS_MASK(2, 2),
     SWS_MASK_OFF3  = SWS_MASK_OFF(0) | SWS_MASK_OFF(1) | SWS_MASK_OFF(2),
@@ -217,10 +243,13 @@ typedef struct SwsOp {
         SwsReadWriteOp  rw;
         SwsPackOp       pack;
         SwsSwizzleOp    swizzle;
+        SwsShiftOp      shift;
+        SwsClearOp      clear;
         SwsConvertOp    convert;
+        SwsClampOp      clamp;
+        SwsScaleOp      scale;
         SwsDitherOp     dither;
         SwsFilterOp     filter;
-        SwsConst        c;
     };
 
     /**
@@ -232,6 +261,11 @@ typedef struct SwsOp {
      */
     SwsComps comps;
 } SwsOp;
+
+#define SWS_OP_NEEDED(op, idx) (!((op)->comps.flags[idx] & SWS_COMP_GARBAGE))
+
+/* Compute SwsCompMask from a mask of needed components */
+SwsCompMask ff_sws_comp_mask_needed(const SwsOp *op);
 
 /**
  * Describe an operation in human-readable form.
@@ -337,17 +371,6 @@ enum SwsOpCompileFlags {
     /* Automatically optimize the operations when compiling */
     SWS_OP_FLAG_OPTIMIZE = 1 << 0,
 };
-
-/**
- * Resolves an operation list to a graph pass. The first and last operations
- * must be a read/write respectively. `flags` is a list of SwsOpCompileFlags.
- *
- * Takes over ownership of `ops` and sets it to NULL, even on failure.
- *
- * Note: `ops` may be modified by this function.
- */
-int ff_sws_compile_pass(SwsGraph *graph, SwsOpList **ops, int flags,
-                        SwsPass *input, SwsPass **output);
 
 /**
  * Helper function to enumerate over all possible (optimized) operation lists,
