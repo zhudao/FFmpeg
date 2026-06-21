@@ -61,7 +61,7 @@ static bool op_commute_clear(SwsOp *op, SwsOp *next)
         op->type = next->filter.type;
         return true;
     case SWS_OP_SWIZZLE:
-        op->clear.mask = ff_sws_comp_mask_swizzle(op->clear.mask, &next->swizzle);
+        ff_sws_comp_mask_swizzle(&op->clear.mask, &next->swizzle);
         ff_sws_apply_op_q(next, op->clear.value);
         return true;
     case SWS_OP_SWAP_BYTES:
@@ -393,12 +393,10 @@ retry:
         SwsOp *next = n + 1 < ops->num_ops ? &ops->ops[n + 1] : &dummy;
 
         /* common helper variable */
+        const SwsCompMask needed = ff_sws_comp_mask_needed(op);
         bool noop = true;
 
-        if (!SWS_OP_NEEDED(op, 0) && !SWS_OP_NEEDED(op, 1) &&
-            !SWS_OP_NEEDED(op, 2) && !SWS_OP_NEEDED(op, 3) &&
-            op->op != SWS_OP_WRITE)
-        {
+        if (!needed && op->op != SWS_OP_WRITE) {
             /* Remove any operation whose output is not needed */
             ff_sws_op_list_remove_at(ops, n, 1);
             goto retry;
@@ -1005,8 +1003,11 @@ int ff_sws_op_list_subpass(SwsOpList *ops1, SwsOpList **out_rest)
     ops1->dst = ops2->src;
 
     for (int i = 0; i < nb_planes; i++) {
+        const int idx = swiz_wr.in[i];
         ops1->plane_dst[i] = ops2->plane_src[i] = i;
-        ops2->comps_src.flags[i] = prev->comps.flags[swiz_wr.in[i]];
+        ops2->comps_src.flags[i]  = prev->comps.flags[idx];
+        ops2->comps_src.min[i]    = prev->comps.min[idx];
+        ops2->comps_src.max[i]    = prev->comps.max[idx];
     }
 
     ff_sws_op_list_remove_at(ops1, idx, ops1->num_ops - idx);
