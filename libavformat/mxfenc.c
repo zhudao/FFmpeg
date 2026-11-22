@@ -745,7 +745,7 @@ static void mxf_write_essence_container_refs(AVFormatContext *s)
     for (i = 0; i < s->nb_streams; i++) {
         MXFStreamContext *sc = s->streams[i]->priv_data;
         // check first track of essence container type and only write it once
-        if (sc->track_essence_element_key[15] != 0)
+        if (sc->track_essence_element_key[15] != (sc->index == INDEX_S436M))
             continue;
         avio_write(pb, *sc->container_ul, 16);
         if (c->essence_container_count == 1)
@@ -3216,6 +3216,9 @@ static int mxf_init(AVFormatContext *s)
             // and produce mxf files with the most relevant flavour for opatom
             sc->track_essence_element_key[14] = 0x06;
         }
+        // ANC element numbers start at 1, ST 436-1
+        if (sc->index == INDEX_S436M)
+            sc->track_essence_element_key[15]++;
         PRINT_KEY(s, "track essence element key", sc->track_essence_element_key);
 
         if (!present[sc->index])
@@ -3470,6 +3473,13 @@ static int mxf_write_packet(AVFormatContext *s, AVPacket *pkt)
             return -1;
         }
     }
+
+    // codecs without sequence headers: every key frame is a random access point
+    if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
+        st->codecpar->codec_id != AV_CODEC_ID_MPEG2VIDEO &&
+        st->codecpar->codec_id != AV_CODEC_ID_H264 &&
+        pkt->flags & AV_PKT_FLAG_KEY)
+        ie.flags |= 0x80;
 
     if (mxf->cbr_index) {
         if (pkt->size != sc->frame_size && st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {

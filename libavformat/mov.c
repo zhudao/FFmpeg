@@ -2669,7 +2669,7 @@ static int mov_read_wave(MOVContext *c, AVIOContext *pb, MOVAtom atom)
                     return AVERROR(ENOMEM);
                 st->codecpar->extradata_size = ALAC_EXTRADATA_SIZE;
                 AV_WB32(st->codecpar->extradata    , ALAC_EXTRADATA_SIZE);
-                AV_WB32(st->codecpar->extradata + 4, MKTAG('a','l','a','c'));
+                AV_WL32(st->codecpar->extradata + 4, MKTAG('a','l','a','c'));
                 AV_WB64(st->codecpar->extradata + 12, buffer);
                 avio_read(pb, st->codecpar->extradata + 20, 16);
                 avio_skip(pb, atom.size - 24);
@@ -4044,8 +4044,10 @@ static int mov_read_stts(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     }
 
     st->nb_frames= total_sample_count;
+    // The media duration can't be shorter than the sample table, so prefer
+    // the latter when they differ.
     if (duration)
-        st->duration= FFMIN(st->duration, duration);
+        st->duration = duration;
 
     // All samples have zero duration. They have higher chance be chose by
     // mov_find_next_sample, which leads to seek again and again.
