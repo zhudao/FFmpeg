@@ -1522,7 +1522,12 @@ static int mov_write_audio_tag(AVFormatContext *s, AVIOContext *pb, MOVMuxContex
         avio_wb64(pb, av_double2int(track->par->sample_rate));
         avio_wb32(pb, track->par->ch_layout.nb_channels);
         avio_wb32(pb, 0x7F000000);
-        avio_wb32(pb, av_get_bits_per_sample(track->par->codec_id));
+        /* constBitsPerChannel: keep the PCM depth, including 8 for A-law and mu-law */
+        if (track->par->codec_id >= AV_CODEC_ID_PCM_S16LE &&
+            track->par->codec_id <  AV_CODEC_ID_ADPCM_IMA_QT)
+            avio_wb32(pb, av_get_bits_per_sample(track->par->codec_id));
+        else
+            avio_wb32(pb, 0);
         avio_wb32(pb, mov_get_lpcm_flags(track->par->codec_id));
         avio_wb32(pb, track->sample_size);
         avio_wb32(pb, get_samples_per_packet(track));
@@ -4655,12 +4660,13 @@ static int mov_write_trak_tag(AVFormatContext *s, AVIOContext *pb, MOVMuxContext
     int64_t pos = avio_tell(pb);
     int entry_backup = track->entry;
     int chunk_backup = track->chunkCount;
+    long sample_count_backup = track->sample_count;
     int ret;
 
     /* If we want to have an empty moov, but some samples already have been
      * buffered (delay_moov), pretend that no samples have been written yet. */
     if (mov->flags & FF_MOV_FLAG_EMPTY_MOOV)
-        track->chunkCount = track->entry = 0;
+        track->chunkCount = track->entry = track->sample_count = 0;
 
     avio_wb32(pb, 0); /* size */
     ffio_wfourcc(pb, "trak");
@@ -4702,6 +4708,7 @@ static int mov_write_trak_tag(AVFormatContext *s, AVIOContext *pb, MOVMuxContext
     mov_write_track_udta_tag(pb, mov, st);
     track->entry = entry_backup;
     track->chunkCount = chunk_backup;
+    track->sample_count = sample_count_backup;
     return update_size(pb, pos);
 }
 
@@ -6949,6 +6956,8 @@ static int mov_finish_fragment(MOVMuxContext *mov, MOVTrack *track,
                track->cluster, track->entry * sizeof(*track->cluster));
         track->entry_written += track->entry;
     }
+    if (track->cenc.aes_ctr)
+        ff_mov_cenc_flush(&track->cenc);
     track->entry = 0;
     track->entries_flushed = 0;
     track->end_reliable = 0;
@@ -7137,9 +7146,6 @@ static int mov_flush_fragment(AVFormatContext *s, int force)
 
             mov_write_moof_tag(s->pb, mov, moof_tracks, mdat_size);
             mov->fragments++;
-
-            if (track->cenc.aes_ctr)
-                ff_mov_cenc_flush(&track->cenc);
 
             avio_wb32(s->pb, mdat_size + 8);
             ffio_wfourcc(s->pb, "mdat");
